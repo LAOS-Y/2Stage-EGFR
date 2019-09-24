@@ -4,32 +4,83 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils.data import NoduleDataset, myCollate
-from model import DenseNet
+from models import DenseNet
 from torch import optim
 import matplotlib.pyplot as plt
 
-trn_ds = NoduleDataset(ct_dir='data/dataset/EGFR/egfr_prep_result/',
-                       bbox_csv_path='data/dataset/EGFR/predicted_bbox.csv',
-                       label_csv_path='data/dataset/EGFR/train_simple.csv',
+from model import generate_model
+
+from setting import parseOpts
+
+from sklearn import metrics
+    
+def auc(label, pred):
+    fpr, tpr, _ = metrics.roc_curve(y_true=label.cpu().numpy(),
+                                    y_score=pred.cpu().numpy())
+            
+    return metrics.auc(fpr, tpr)
+
+args = parseOpts()
+print(args)
+
+class sets:
+    model='resnet'
+    gpu_id = '1'
+    no_cuda = False
+    model_depth = 50
+    resnet_shortcut = 'B'
+    input_D = 56
+    input_H = 448
+    input_W = 448
+    n_seg_classes = 1
+
+model, _ = generate_model(sets)
+model = model.cuda()
+
+
+print("start loading params")
+
+model.load_state_dict(torch.load("medicalnet_resnet50.pth"))
+
+print("finish loading params")
+
+print("Start Initializing Dataset")
+
+trn_ds = NoduleDataset(ct_dir=args.ct_dir,
+                       bbox_csv_path=args.bbox_csv,
+                       label_csv_path=args.train_csv,
                        skip_missed_npy=True)
 
-val_ds = NoduleDataset(ct_dir='data/dataset/EGFR/egfr_prep_result/',
-                       bbox_csv_path='data/dataset/EGFR/predicted_bbox.csv',
-                       label_csv_path='data/dataset/EGFR/val_simple.csv',
+val_ds = NoduleDataset(ct_dir=args.ct_dir,
+                       bbox_csv_path=args.bbox_csv,
+                       label_csv_path=args.val_csv,
                        skip_missed_npy=True)
 
-trn_dl = DataLoader(trn_ds, batch_size=32, collate_fn=myCollate)
-val_dl = DataLoader(val_ds, batch_size=32, collate_fn=myCollate)
+trn_dl = DataLoader(trn_ds, batch_size=args.batch_size, collate_fn=myCollate, shuffle=True)
+val_dl = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=myCollate, shuffle=True)
 
-model = DenseNet().cuda()
+print("Finish Initializing Dataset")
+
+# model = DenseNet().cuda()
 loss_fn = nn.BCEWithLogitsLoss().cuda()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+scheduler = optim.lr_scheduler.StepLR(optimizer, 10, gamma=0.1)
 
 trn_losses = []
 val_losses = []
 
-for i in range(300):
-    
+trn_auc = []
+val_auc = []
+
+lrs = []
+
+for i in range(100):
+    loss_data = 0
+
+    pred_data_lst = []
+    label_data_lst = []
+
     for x_list, y in trn_dl:
         assert isinstance(x_list[0], list)
         assert isinstance(x_list[0][0], torch.Tensor)
@@ -41,36 +92,82 @@ for i in range(300):
         y = y.float().cuda()
 
         logit = model(x)[:, 0]
+
         loss = loss_fn(logit, y)
+        loss_data += loss.detach().item() * x.shape[0]
+
+        #import ipdb
+        #ipdb.set_trace()
 
         loss.backward()
         optimizer.step()
 
-    trn_losses.append(loss.item())
+        optimizer.zero_grad()
 
-    for x_list, y in val_dl:
-        assert isinstance(x_list[0], list)
-        assert isinstance(x_list[0][0], torch.Tensor)
+        pred_data_lst.append(torch.sigmoid(logit).cpu().data)
+        label_data_lst.append(y.cpu().data)
 
-        x_list = [i[0].unsqueeze(0) for i in x_list]
-        x = torch.stack(x_list)
+        #print('train loss:', loss)
+        
+    pred = torch.cat(pred_data_lst)
+    label = torch.cat(label_data_lst)
+    trn_auc.append(auc(label, pred))
+    
+    trn_losses.append(loss_data / len(trn_ds))
 
-        x = x.cuda()
-        y = y.float().cuda()
+    #loss_data = 0
 
-        with torch.no_grad():
-            logit = model(x)[:, 0]
-            loss = loss_fn(logit, y)
+    #pred_data_lst = []
+    #label_data_lst = []
+    
+    #for x_list, y in val_dl:
+    #    assert isinstance(x_list[0], list)
+    #    assert isinstance(x_list[0][0], torch.Tensor)
 
-    val_losses.append(loss.item())
+    #    x_list = [i[0].unsqueeze(0) for i in x_list]
+    #    x = torch.stack(x_list)
 
+    #    x = x.cuda()
+    #    y = y.float().cuda()
+
+    #    with torch.no_grad():
+    #        logit = model(x)[:, 0]
+    #        loss = loss_fn(logit, y)
+
+    #        loss_data += loss.item() * x.shape[0]
+
+    #    pred_data_lst.append(torch.sigmoid(logit).cpu().data)
+    #    label_data_lst.append(y.cpu().data)
+
+    #pred = torch.cat(pred_data_lst)
+    #label = torch.cat(label_data_lst)
+    #val_auc.append(auc(label, pred))
+    
+    scheduler.step()
+
+    #val_losses.append(loss_data / len(val_ds))
+    
+    lrs.append(optimizer.param_groups[0]['lr'])
+
+    plt.subplot(3,1,1)
     plt.plot(trn_losses, color='r', label='TRN LOSS')
-    plt.plot(val_losses, color='g', label='VAL LOSS')
-
+    #plt.plot(val_losses, color='g', label='VAL LOSS')
     plt.legend()
-    plt.savefig('data/log/log.png', dpi=200)
+    
+    plt.subplot(3,1,2)
+    plt.plot(trn_auc, color='r', label='TRN AUC')
+    #plt.plot(val_auc, color='g', label='VAL AUC')
+    plt.legend()
+    
+    plt.subplot(3,1,3)
+    plt.plot(lrs, color='b', label='lr')
+    plt.legend()
+    
+    plt.savefig('data/log/is_train/log.png', dpi=200)
     plt.close('all')
     
-    print("Epoch #{}: TRAIN LOSS: {} VAL LOSS: {}".format(i, round(trn_losses[-1], 3), round(val_losses[-1], 3)))
+    print("Epoch #{}: TRAIN LOSS: {} ".format(i, round(trn_losses[-1], 3)))
+    #print("Epoch #{}: TRAIN LOSS: {} VAL LOSS: {}".format(i, round(trn_losses[-1], 3), round(val_losses[-1], 3)))
     
-    torch.save(model.state_dict(), 'data/log/weight.ckpt')
+    if (i + 1) % 5 == 0:
+        torch.save(model.state_dict(), 'data/log/is_train/weight_epoch#{}.ckpt'.format(i + 1))

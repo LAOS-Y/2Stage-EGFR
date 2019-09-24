@@ -17,65 +17,49 @@ class NoduleDataset(Dataset):
             [scan: str]
         """
         
+        self.ct_dir = ct_dir
+        self.bbox_csv = pd.read_csv(bbox_csv_path, dtype={'id': object})
+        self.label_csv = pd.read_csv(label_csv_path, dtype={'id': object})
+        
         expected_kw = {'iou_th', 'pad', 'ret_bbox', 'ret_id', 'out_dia', 'ignore_bbox_d', 'skip_missed_npy'}
         
         if not set(kwargs.keys()) <= expected_kw:
             raise TypeError('unexpected keywords: ' + str(set(kwargs.keys()) - expected_kw))
         
-        iou_th = kwargs.get('iou_th', 0.05)
-        pad = kwargs.get('pad', 170)
-        ret_bbox = kwargs.get('ret_bbox', False)
-        ret_id = kwargs.get('ret_id', False)
-        out_dia = kwargs.get('out_dia', 64)
-        ignore_bbox_d = kwargs.get('ignore_bbox_d', False)
-        skip_missed_npy = kwargs.get('skip_missed_npy', False)
-        
-        print("Start initializing Dataset")
-        
-        self.bbox_csv = pd.read_csv(bbox_csv_path, dtype={'id': object})
-        self.label_csv = pd.read_csv(label_csv_path, dtype={'id': object})
-        
-        self.ret_bbox = ret_bbox
-        self.ret_id = ret_id
+        self.iou_th = kwargs.get('iou_th', 0.05)
+        self.pad = kwargs.get('pad', 170)
+        self.ret_bbox = kwargs.get('ret_bbox', False)
+        self.ret_id = kwargs.get('ret_id', False)
+        self.out_dia = kwargs.get('out_dia', 64)
+        self.ignore_bbox_d = kwargs.get('ignore_bbox_d', False)
+        self.skip_missed_npy = kwargs.get('skip_missed_npy', False)
         
         self.ids = []
         self.nmsed_bboxes = {}
         self.nodules = {}
         
         for idx in list(self.label_csv.id):
-            #c z x y
-            bboxes = self.bbox_csv[self.bbox_csv.id == idx].iloc[:, 1:].to_numpy()
-            nmsed_bboxes = nms(bboxes, iou_th)
+            #c z x y            
+            path = os.path.join(self.ct_dir, "{}_clean.npy").format(idx)
             
-            try:
-                scan = np.load(os.path.join(ct_dir, "{}_clean.npy").format(idx))[0]
-            except FileNotFoundError as e:
-                if not skip_missed_npy:
-                    raise e
+            if not os.path.exists(path):
+                if not self.skip_missed_npy:
+                    raise FileNotFoundError("[Errno 2] No such file or directory: '{}'".format(path))
                 else:
-                    print("skip "+ os.path.join(ct_dir, "{}_clean.npy").format(idx))
+                    print("skip "+ path)
                     continue
-            
-            nodules_one_scan = [torch.Tensor(self.crop(scan, bbox[1:], pad, out_dia, ignore_bbox_d)) for bbox in nmsed_bboxes]
-            
-            self.nmsed_bboxes[idx] = torch.Tensor(nmsed_bboxes)
-#             try:
-#                 self.nmsed_bboxes[idx] = torch.Tensor(nmsed_bboxes)
-#             except RuntimeError as e:
-#                 print(e)
-#                 import ipdb
-#                 ipdb.set_trace()
-            
-            self.nodules[idx] = nodules_one_scan
+
             self.ids.append(idx)
-        
-        print("Finish initializing Dataset")
         
     def __getitem__(self, idx):
         #idx: int
         #scan_id: str
         
         scan_id = self.ids[idx]
+        
+        if scan_id not in self.nmsed_bboxes:
+            self._processOneScan(scan_id)
+        
         ret_data = (self.nodules[scan_id], int(self.label_csv.label[idx]))
         
         if self.ret_bbox:
@@ -87,7 +71,7 @@ class NoduleDataset(Dataset):
         return ret_data
     
     def __len__(self):
-        return len(self.nmsed_bboxes)
+        return len(self.ids)
         
     def crop(self, scan, bbox, pad=None, out_dia=64, ignore_bbox_d=False):
         # bbox.shape (4,)
@@ -117,3 +101,14 @@ class NoduleDataset(Dataset):
         patch = ndimage.zoom(patch, (out_dia / patch.shape[0], out_dia / patch.shape[1], out_dia / patch.shape[2]))
         
         return patch
+    
+    def _processOneScan(self, idx):
+        scan = np.load(os.path.join(self.ct_dir, "{}_clean.npy").format(idx))[0]
+        
+        bboxes = self.bbox_csv[self.bbox_csv.id == idx].iloc[:, 1:].to_numpy()
+        nmsed_bboxes = nms(bboxes, self.iou_th)
+
+        nodules_one_scan = [torch.Tensor(self.crop(scan, bbox[1:], self.pad, self.out_dia, self.ignore_bbox_d)) for bbox in nmsed_bboxes]
+
+        self.nmsed_bboxes[idx] = torch.Tensor(nmsed_bboxes)
+        self.nodules[idx] = nodules_one_scan
