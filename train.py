@@ -14,6 +14,8 @@ from setting import parseOpts
 
 from sklearn import metrics
     
+import os
+
 def auc(label, pred):
     fpr, tpr, _ = metrics.roc_curve(y_true=label.cpu().numpy(),
                                     y_score=pred.cpu().numpy())
@@ -25,24 +27,19 @@ print(args)
 
 class sets:
     model='resnet'
-    gpu_id = '1'
-    no_cuda = False
     model_depth = 50
-    resnet_shortcut = 'B'
-    input_D = 56
-    input_H = 448
-    input_W = 448
-    n_seg_classes = 1
 
-model, _ = generate_model(sets)
+os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
+model = generate_model(sets)
 model = model.cuda()
-
 
 print("start loading params")
 
-model.load_state_dict(torch.load("medicalnet_resnet50.pth"))
+model.load_state_dict(torch.load(args.weight))
 
 print("finish loading params")
+
+model = nn.DataParallel(model)
 
 print("Start Initializing Dataset")
 
@@ -96,9 +93,6 @@ for i in range(100):
         loss = loss_fn(logit, y)
         loss_data += loss.detach().item() * x.shape[0]
 
-        #import ipdb
-        #ipdb.set_trace()
-
         loss.backward()
         optimizer.step()
 
@@ -106,8 +100,6 @@ for i in range(100):
 
         pred_data_lst.append(torch.sigmoid(logit).cpu().data)
         label_data_lst.append(y.cpu().data)
-
-        #print('train loss:', loss)
         
     pred = torch.cat(pred_data_lst)
     label = torch.cat(label_data_lst)
@@ -115,59 +107,58 @@ for i in range(100):
     
     trn_losses.append(loss_data / len(trn_ds))
 
-    #loss_data = 0
+    loss_data = 0
 
-    #pred_data_lst = []
-    #label_data_lst = []
+    pred_data_lst = []
+    label_data_lst = []
     
-    #for x_list, y in val_dl:
-    #    assert isinstance(x_list[0], list)
-    #    assert isinstance(x_list[0][0], torch.Tensor)
+    for x_list, y in val_dl:
+        assert isinstance(x_list[0], list)
+        assert isinstance(x_list[0][0], torch.Tensor)
 
-    #    x_list = [i[0].unsqueeze(0) for i in x_list]
-    #    x = torch.stack(x_list)
+        x_list = [i[0].unsqueeze(0) for i in x_list]
+        x = torch.stack(x_list)
 
-    #    x = x.cuda()
-    #    y = y.float().cuda()
+        x = x.cuda()
+        y = y.float().cuda()
 
-    #    with torch.no_grad():
-    #        logit = model(x)[:, 0]
-    #        loss = loss_fn(logit, y)
+        with torch.no_grad():
+            logit = model(x)[:, 0]
+            loss = loss_fn(logit, y)
 
-    #        loss_data += loss.item() * x.shape[0]
+            loss_data += loss.item() * x.shape[0]
 
-    #    pred_data_lst.append(torch.sigmoid(logit).cpu().data)
-    #    label_data_lst.append(y.cpu().data)
+        pred_data_lst.append(torch.sigmoid(logit).cpu().data)
+        label_data_lst.append(y.cpu().data)
 
-    #pred = torch.cat(pred_data_lst)
-    #label = torch.cat(label_data_lst)
-    #val_auc.append(auc(label, pred))
+    pred = torch.cat(pred_data_lst)
+    label = torch.cat(label_data_lst)
+    val_auc.append(auc(label, pred))
     
     scheduler.step()
 
-    #val_losses.append(loss_data / len(val_ds))
+    val_losses.append(loss_data / len(val_ds))
     
     lrs.append(optimizer.param_groups[0]['lr'])
 
     plt.subplot(3,1,1)
     plt.plot(trn_losses, color='r', label='TRN LOSS')
-    #plt.plot(val_losses, color='g', label='VAL LOSS')
+    plt.plot(val_losses, color='g', label='VAL LOSS')
     plt.legend()
     
     plt.subplot(3,1,2)
     plt.plot(trn_auc, color='r', label='TRN AUC')
-    #plt.plot(val_auc, color='g', label='VAL AUC')
+    plt.plot(val_auc, color='g', label='VAL AUC')
     plt.legend()
     
     plt.subplot(3,1,3)
     plt.plot(lrs, color='b', label='lr')
     plt.legend()
     
-    plt.savefig('data/log/is_train/log.png', dpi=200)
+    plt.savefig('data/log/freeze/log.png', dpi=200)
     plt.close('all')
     
-    print("Epoch #{}: TRAIN LOSS: {} ".format(i, round(trn_losses[-1], 3)))
-    #print("Epoch #{}: TRAIN LOSS: {} VAL LOSS: {}".format(i, round(trn_losses[-1], 3), round(val_losses[-1], 3)))
+    print("Epoch #{}: TRAIN LOSS: {} VAL LOSS: {}".format(i, round(trn_losses[-1], 3), round(val_losses[-1], 3)))
     
     if (i + 1) % 5 == 0:
-        torch.save(model.state_dict(), 'data/log/is_train/weight_epoch#{}.ckpt'.format(i + 1))
+        torch.save(model.module.state_dict(), 'data/log/freeze/weight_epoch#{}.ckpt'.format(i + 1))

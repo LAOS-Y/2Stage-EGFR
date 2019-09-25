@@ -112,3 +112,16 @@ class NoduleDataset(Dataset):
 
         self.nmsed_bboxes[idx] = torch.Tensor(nmsed_bboxes)
         self.nodules[idx] = nodules_one_scan
+
+from copy import deepcopy
+
+class Subset(Dataset):
+    def __init__(self, dataset, idxs):
+        self.dataset = dataset
+        self.idxs = idxs
+
+    def __getitem__(self, idx):
+        return self.dataset[self.idxs[idx]]
+
+    def __len__(self):
+        return len(self.idxs)

@@ -23,14 +23,13 @@ def conv3x3x3(in_planes, out_planes, stride=1, dilation=1):
         bias=False)
 
 
-def downsample_basic_block(x, planes, stride, no_cuda=False):
+def downsample_basic_block(x, planes, stride):
     out = F.avg_pool3d(x, kernel_size=1, stride=stride)
     zero_pads = torch.Tensor(
         out.size(0), planes - out.size(1), out.size(2), out.size(3),
         out.size(4)).zero_()
-    if not no_cuda:
-        if isinstance(out.data, torch.cuda.FloatTensor):
-            zero_pads = zero_pads.cuda()
+    if isinstance(out.data, torch.cuda.FloatTensor):
+        zero_pads = zero_pads.cuda()
 
     #out = Variable(torch.cat([out.data, zero_pads], dim=1))
     out = torch.cat([out, zero_pads], dim=1)
@@ -115,10 +114,7 @@ class ResNet(nn.Module):
     def __init__(self,
                  block,
                  layers,
-                 sample_input_D,
-                 sample_input_H,
-                 sample_input_W,
-                 num_seg_classes,
+                 num_classes=1,
                  shortcut_type='B',
                  no_cuda = False):
         self.inplanes = 64
@@ -145,32 +141,7 @@ class ResNet(nn.Module):
 
         self.finalnorm =  nn.BatchNorm3d(2048)
         
-        self.classifier = nn.Linear(2048, num_seg_classes)
-#         self.conv_seg = nn.Sequential(
-#                                         nn.ConvTranspose3d(
-#                                         512 * block.expansion,
-#                                         32,
-#                                         2,
-#                                         stride=2
-#                                         ),
-#                                         nn.BatchNorm3d(32),
-#                                         nn.ReLU(inplace=True),
-#                                         nn.Conv3d(
-#                                         32,
-#                                         32,
-#                                         kernel_size=3,
-#                                         stride=(1, 1, 1),
-#                                         padding=(1, 1, 1),
-#                                         bias=False), 
-#                                         nn.BatchNorm3d(32),
-#                                         nn.ReLU(inplace=True),
-#                                         nn.Conv3d(
-#                                         32,
-#                                         num_seg_classes,
-#                                         kernel_size=1,
-#                                         stride=(1, 1, 1),
-#                                         bias=False) 
-#                                         )
+        self.classifier = nn.Linear(2048, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -178,6 +149,15 @@ class ResNet(nn.Module):
             elif isinstance(m, nn.BatchNorm3d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
+
+#         self.features = nn.Sequential(self.conv1,
+#                                       self.bn1,
+#                                       self.relu,
+#                                       self.maxpool,
+#                                       self.layer1,
+#                                       self.layer2,
+#                                       self.layer3,
+#                                       self.layer4)
 
     def _make_layer(self, block, planes, blocks, shortcut_type, stride=1, dilation=1):
         downsample = None
@@ -206,7 +186,6 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        #with torch.no_grad():
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -215,10 +194,7 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-#         x = self.conv_seg(x)
-
-        x = self.finalnorm(x)
-        x = F.relu(x)
+        #x = self.finalnorm(x)
         x = F.adaptive_avg_pool3d(x, 1).squeeze()
         x = self.classifier(x)
 

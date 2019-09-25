@@ -1,2 +1,2 @@
-from .dataset import NoduleDataset
+from .dataset import NoduleDataset, Subset
 from .collate import myCollate

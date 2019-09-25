@@ -19,12 +19,18 @@ def parseOpts():
                         default=32,
                         type=int)
 
-    parser.add_argument('--log-dir',
-                        default='data/log')
-
     parser.add_argument('--lr',
                         default=0.001,
                         type=float)
+
+    parser.add_argument('--log-dir',
+                        default='data/log')
+
+    parser.add_argument('--weight',
+                        default='medicalnet_resnet50.pth')
+
+    parser.add_argument('--gpus',
+                        default='0')
 
     args = parser.parse_args()
     
